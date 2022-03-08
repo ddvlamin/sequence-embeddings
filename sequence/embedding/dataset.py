@@ -33,7 +33,7 @@ class ScopeDummyDataset(Dataset):
 
     def __getitem__(self, idx):
         sline = self.lines[idx]
-        label_tensor = torch.tensor(np.ones((1,4)))
+        label_tensor = torch.ones([1,4], requires_grad=False)
         label = int(sline[4])
         label_tensor[0,label:] = 0
         return self.encoder(sline[0]), self.encoder(sline[1]), label_tensor
@@ -51,6 +51,6 @@ def batchify(batch):
     transposed_data = list(zip(*batch))
     batch1, batch2, labels = transposed_data
 
-    return pack_batch(batch1), pack_batch(batch2), torch.stack(labels, dim=0)
+    return pack_batch(batch1), pack_batch(batch2), torch.vstack(labels)
 
 

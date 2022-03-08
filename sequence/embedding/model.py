@@ -1,4 +1,5 @@
 import itertools
+import functools
 import numpy as np
 import torch
 from torch import nn
@@ -6,11 +7,14 @@ from torch.nn.parameter import Parameter
 import torch.nn.functional as F
 from torch.nn.utils.rnn import pad_packed_sequence, pack_padded_sequence
 
+ReluRNN = functools.partial(nn.RNN, nonlinearity="relu")
+
 class OrdinalRegression(nn.Module):
     def __init__(self, n_classes):
+        super(OrdinalRegression, self).__init__()
         self.n_classes = n_classes
-        self.coefficients = torch.tensor(np.ones((1, n_classes))/n_classes, requires_grad=True, dtype=torch.float)
-        self.bias = torch.tensor(np.zeros((1, n_classes)), requires_grad=True, dtype=torch.float)
+        self.coefficients = Parameter(torch.tensor(np.ones((1, n_classes)), dtype=torch.float), requires_grad=True)
+        self.bias = Parameter(torch.tensor(np.zeros((1, n_classes)), dtype=torch.float), requires_grad=True)
 
     def forward(self, batch):
         if batch.size(1) != 1:
@@ -18,13 +22,24 @@ class OrdinalRegression(nn.Module):
         expanded_bias = self.bias.expand(batch.size(0),-1)
         return torch.sigmoid(torch.matmul(batch,F.relu(self.coefficients))+expanded_bias)
 
+"""
 def uniform_alignment(sequence_embedding1, length1, sequence_embedding2, length2):
     r1 = sequence_embedding1[:length1,:].repeat(length2,1)
     r2 = sequence_embedding2[:length2,:].repeat(length1,1)
     return -(r1-r2).abs().sum()/(length1*length2)
+"""
+
+class MeanAlignment(nn.Module):
+    def __init__(self):
+        super(MeanAlignment, self).__init__()
+
+    def forward(self, embeddings1, embeddings2):
+        sum1 = torch.sum(embeddings1, dim=1)
+        sum2 = torch.sum(embeddings2, dim=1)
+        return -torch.linalg.norm(torch.sub(sum1, sum2), ord=1, dim=1)
 
 class SequenceEmbedder(nn.Module):
-    def __init__(self, n_classes, input_dim, hidden_lstm_units=512, n_lstm_layers=1, output_dim=100, bidirectional=True):
+    def __init__(self, n_classes, input_dim, hidden_lstm_units=512  , n_lstm_layers=1, output_dim=100, bidirectional=True, recurrent_layer=nn.LSTM):
         super(SequenceEmbedder, self).__init__()
 
         self.n_classes = n_classes
@@ -33,61 +48,53 @@ class SequenceEmbedder(nn.Module):
         self.n_lstm_layers = n_lstm_layers
         self.bidirectional = bidirectional
         self.output_dim = output_dim
-
-        self.rnn = nn.LSTM(#TODO: adjust between LSTM/GRU/RNN
-            input_size=hidden_lstm_units,
-            hidden_size=hidden_lstm_units,
-            num_layers=n_lstm_layers,
-            batch_first=True,
-            bidirectional=bidirectional,
-            bias=False,
-            #nonlinearity="relu" #TODO: adjust between LSTM/GRU/RNN
-        )
-        self.fix_rnn_input_parameters()
+        self.D = 2 if self.bidirectional else 1
 
         self.input_stack = nn.Sequential(
             nn.Linear(input_dim, hidden_lstm_units, dtype=torch.float),
             nn.ReLU()
         )
 
-        self.D = 2 if self.bidirectional else 1
+        self.rnn = recurrent_layer(
+            input_size=hidden_lstm_units,
+            hidden_size=hidden_lstm_units,
+            num_layers=n_lstm_layers,
+            batch_first=True,
+            bidirectional=bidirectional,
+            bias=True)
+
+        self._fix_rnn_input_parameters()
+
         self.output_stack = nn.Sequential(
             nn.Linear(self.D*hidden_lstm_units, output_dim, dtype=torch.float),
             nn.ReLU()
         )
 
-    def _initialize_parameters(self):
-        """
-        Just to initialize a simple RNN with fixed values for debugging and understanding PyTorch forward flow
-        Important note: will not work with LSTM or GRU, will not work with bias in RNN (or bidirectionality)
-        """
-        ones = np.ones((self.hidden_lstm_units, self.input_dim))
-        for rowi in range(ones.shape[0]):
-            for coli in range(ones.shape[1]):
-                ones[rowi,coli] = rowi+coli
-        self.input_stack[0].weight = Parameter(torch.tensor(
-            ones,
-            dtype=torch.float
-        ))
-        self.input_stack[0].bias = Parameter(torch.tensor(0, dtype=torch.float))
+        self.alignment_layer = MeanAlignment()
 
-        for k in range(self.n_lstm_layers):
-            ones = np.ones(getattr(self.rnn,f"weight_hh_l{k}").shape)
-            setattr(self.rnn,f"weight_hh_l{k}",Parameter(torch.tensor(ones, dtype=torch.float)))
+        self.ordinal_regression = OrdinalRegression(self.n_classes)
 
-        ones = np.ones(self.output_stack[0].weight.shape)
-        self.output_stack[0].weight = Parameter(torch.tensor(
-            ones,
-            dtype=torch.float
-        ))
-        self.output_stack[0].bias = Parameter(torch.tensor(0, dtype=torch.float))
+    def _fix_rnn_input_parameters(self):
+        print("called fix_rnn_input_parameters")
 
-    def fix_rnn_input_parameters(self):
-        #TODO: adjust between LSTM/GRU/RNN
-        eye = np.repeat(np.eye(self.hidden_lstm_units), 4, axis=0)
+        n_repetitions = 1
+        if type(self.rnn) == nn.LSTM:
+            n_repetitions = 4
+        elif type(self.rnn) == nn.GRU:
+            n_repetitions = 3
+
+        eye = np.repeat(np.eye(self.hidden_lstm_units), n_repetitions, axis=0)
         setattr(self.rnn,
                 "weight_ih_l0",
                 Parameter(torch.tensor(eye, dtype=torch.float), requires_grad=False))
+
+        for i in range(1, self.n_lstm_layers):
+            eye = np.repeat(np.eye(self.hidden_lstm_units), n_repetitions, axis=0)
+            eye = np.repeat(eye, self.D, axis=1)
+            setattr(self.rnn,
+                f"weight_ih_l{i}",
+                Parameter(torch.tensor(eye, dtype=torch.float), requires_grad=False))
+
 
     def embed_sequence(self, batch, lengths):
         #unpack packed sequences in batch by padding: shape L*input_dim -> shape B*T*input_dim
@@ -99,9 +106,7 @@ class SequenceEmbedder(nn.Module):
         #relu transformation of input and packing sequences in batch for recurrent layer
         #shape B*T*input_dim -> L*hidden_lstm_units
         rnn_inputs = self.input_stack(batch_padded)
-        #print(f"{rnn_inputs}")
         rnn_inputs = nn.utils.rnn.pack_padded_sequence(rnn_inputs, lengths=lengths, batch_first=True, enforce_sorted=False)
-        #print(f"{rnn_inputs}")
 
         #apply recurrent layers and unpack by padding the output of the last recurrent layer
         #lstm_h_0 = torch.tensor(np.zeros((self.D*self.n_lstm_layers, batch.batch_sizes[0], self.hidden_lstm_units)), dtype=torch.float)
@@ -114,27 +119,23 @@ class SequenceEmbedder(nn.Module):
 
     def forward(self, batch):
         (batch1, lengths1), (batch2, lengths2), labels = batch
+        print(f"packed sequences 1 {batch1}")
+        print(f"packed sequences 2 {batch2}")
+        print(f"labels {labels}")
 
         sequence_embeddings1 = self.embed_sequence(batch1, lengths1)
         sequence_embeddings2 = self.embed_sequence(batch2, lengths2)
+        print(f"embedded sequences 1 {sequence_embeddings1}")
+        print(f"sequence lenghts 1 {lengths1}")
+        print(f"embedded sequences 2 {sequence_embeddings2}")
+        print(f"sequence lenghts 2 {lengths2}")
 
-        batch_size = sequence_embeddings1.size(0)
-        chunks1 = sequence_embeddings1.chunk(batch_size, 0)
-        chunks2 = sequence_embeddings2.chunk(batch_size, 0)
+        stacked_scores = self.alignment_layer(sequence_embeddings1, sequence_embeddings2)
+        print(f"stacked scores {stacked_scores}")
+        stacked_scores = stacked_scores.reshape((sequence_embeddings1.size(0),1))
 
-        alignment_scores = []
-        for embedding1, length1, embedding2, length2 in zip(chunks1,
-                                                            lengths1,
-                                                            chunks2,
-                                                            lengths2):
-            flattened1 = torch.flatten(embedding1, start_dim=0, end_dim=1)
-            flattened2 = torch.flatten(embedding2, start_dim=0, end_dim=1)
-            alignment_score = uniform_alignment(flattened1, length1, flattened2, length2)
-            alignment_scores.append(alignment_score)
-
-        stacked_scores = torch.tensor(alignment_scores).reshape((len(alignment_scores),1))
-
-        stacked_predictions = OrdinalRegression(self.n_classes).forward(stacked_scores)
+        stacked_predictions = self.ordinal_regression(stacked_scores)
+        print(f"stacked predictions {stacked_predictions}")
 
         #TODO: labels should be processed somewhere else
         return stacked_predictions, labels
@@ -148,7 +149,8 @@ def train_loop(dataloader, model, loss_fn, optimizer):
 
         # Backpropagation
         optimizer.zero_grad()
-        loss.backward()
+        loss.backward(retain_graph=True)
+
         optimizer.step()
 
         if batchi % 100 == 0:

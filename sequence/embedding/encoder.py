@@ -15,7 +15,7 @@ def sequence_one_hot_encoder(indexer, sequence):
     for i, aa in enumerate(sequence):
         index = indexer.get(aa, dim)
         one_hot_encoded[i, index] = 1.0
-    return torch.tensor(one_hot_encoded, dtype=torch.float)
+    return torch.tensor(one_hot_encoded, requires_grad=False, dtype=torch.float)
 
 dummy_encoder = functools.partial(sequence_one_hot_encoder, dummy2index)
 aa_encoder = functools.partial(sequence_one_hot_encoder, aa2index)
