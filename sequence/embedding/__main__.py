@@ -12,20 +12,10 @@ if __name__ == "__main__":
     dataloader = DataLoader(data, batch_size=2, collate_fn=batchify)
     model = SequenceEmbedder(4, 3, hidden_lstm_units=5, output_dim=5, bidirectional=True, recurrent_layer=ReluRNN)
     model.float()
-    model.to("cpu")
-    print(model)
 
-    learning_rate = 0.01
-    loss_fn = structural_similarity_loss
-
-    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
-    for p in model.parameters():
-        print(f"{p}")
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
 
     epochs = 200
     for t in range(epochs):
         print(f"Epoch {t+1}\n-------------------------------")
-        train_loop(dataloader, model, loss_fn, optimizer)
-        #print(model.ordinal_regression.coefficients.grad)
-        #test_loop(test_dataloader, model, loss_fn)
-        print("Done!")
+        train_loop(dataloader, model, structural_similarity_loss, optimizer)

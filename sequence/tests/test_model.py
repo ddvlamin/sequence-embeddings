@@ -34,25 +34,6 @@ def initialize_parameters(model):
     ))
     model.output_stack[0].bias = Parameter(torch.tensor(0, dtype=torch.float))
 
-"""
-def test_forward_model():
-    print("test_forward_model")
-    data = ScopeDummyDataset(dummy_encoder)
-    dataloader = DataLoader(data, batch_size=2, collate_fn=batchify)
-
-    model = SequenceEmbedder(4, 3, hidden_lstm_units=2, output_dim=2, bidirectional=False, recurrent_layer=ReluRNN)
-    model.float()
-    initialize_parameters(model)
-    model.to("cpu")
-
-    for batchi, batch in enumerate(dataloader):
-        # Compute prediction and loss
-        out = model(batch)
-        print(f"predictions of model: {out}")
-        loss = structural_similarity_loss(out[0], out[1])
-        print(f"loss: {loss}")
-"""
-
 def test_forward_model():
     data = ScopeDummyDataset(dummy_encoder)
     dataloader = DataLoader(data, batch_size=2, collate_fn=batchify)
@@ -66,7 +47,8 @@ def test_forward_model():
     for t in range(epochs):
         train_loop(dataloader, model, structural_similarity_loss, optimizer)
 
-    predictions = model.forward(batchify(data))
-    positive_mask = (predictions[0]-0.6)>0
+    batch_left, batch_right, _ = batchify(data)
+    predictions = model.forward((batch_left, batch_right))
+    positive_mask = (predictions-0.6)>0
     expected_mask = torch.tensor([[True, True, False, False], [True, True, True, True]], dtype=torch.bool)
     assert(torch.all(expected_mask == positive_mask))

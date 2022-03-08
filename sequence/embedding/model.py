@@ -39,7 +39,7 @@ class MeanAlignment(nn.Module):
         return -torch.linalg.norm(torch.sub(sum1, sum2), ord=1, dim=1)
 
 class SequenceEmbedder(nn.Module):
-    def __init__(self, n_classes, input_dim, hidden_lstm_units=512  , n_lstm_layers=1, output_dim=100, bidirectional=True, recurrent_layer=nn.LSTM):
+    def __init__(self, n_classes, input_dim, hidden_lstm_units=512, n_lstm_layers=1, output_dim=100, bidirectional=True, recurrent_layer=nn.LSTM):
         super(SequenceEmbedder, self).__init__()
 
         self.n_classes = n_classes
@@ -118,34 +118,26 @@ class SequenceEmbedder(nn.Module):
         return self.output_stack(rnn_out_unpacked)
 
     def forward(self, batch):
-        (batch1, lengths1), (batch2, lengths2), labels = batch
-        print(f"packed sequences 1 {batch1}")
-        print(f"packed sequences 2 {batch2}")
-        print(f"labels {labels}")
+        (batch1, lengths1), (batch2, lengths2) = batch
 
         sequence_embeddings1 = self.embed_sequence(batch1, lengths1)
         sequence_embeddings2 = self.embed_sequence(batch2, lengths2)
-        print(f"embedded sequences 1 {sequence_embeddings1}")
-        print(f"sequence lenghts 1 {lengths1}")
-        print(f"embedded sequences 2 {sequence_embeddings2}")
-        print(f"sequence lenghts 2 {lengths2}")
 
         stacked_scores = self.alignment_layer(sequence_embeddings1, sequence_embeddings2)
-        print(f"stacked scores {stacked_scores}")
         stacked_scores = stacked_scores.reshape((sequence_embeddings1.size(0),1))
 
         stacked_predictions = self.ordinal_regression(stacked_scores)
-        print(f"stacked predictions {stacked_predictions}")
 
         #TODO: labels should be processed somewhere else
-        return stacked_predictions, labels
+        return stacked_predictions
 
 def train_loop(dataloader, model, loss_fn, optimizer):
     size = len(dataloader.dataset)
-    for batchi, batch in enumerate(dataloader):
+    for batchi, (batch_left, batch_right, labels) in enumerate(dataloader):
         # Compute prediction and loss
-        out = model(batch)
-        loss = loss_fn(out[0], out[1])
+        print(f"batch left: {batch_left}")
+        predictions = model((batch_left, batch_right))
+        loss = loss_fn(predictions, labels)
 
         # Backpropagation
         optimizer.zero_grad()
@@ -154,20 +146,17 @@ def train_loop(dataloader, model, loss_fn, optimizer):
         optimizer.step()
 
         if batchi % 100 == 0:
-            loss, current = loss.item(), batchi * batch[0][0].batch_sizes[0]
+            loss, current = loss.item(), batchi * batch_left[0].batch_sizes[0]
             print(f"loss: {loss:>7f}  [{current:>5d}/{size:>5d}]")
 
-def test_loop(dataloader, model, loss_fn):
-    size = len(dataloader.dataset)
+def test_loss(dataloader, model, loss_fn):
     num_batches = len(dataloader)
-    test_loss, correct = 0, 0
+    loss = 0
 
     with torch.no_grad():
-        for X, y in dataloader:
-            pred = model(X)
-            test_loss += loss_fn(pred, y).item()
-            correct += (pred.argmax(1) == y).type(torch.float).sum().item()
+        for batch_left, batch_right, labels in dataloader:
+            predictions = model((batch_left, batch_right))
+            loss += loss_fn(predictions, labels).item()
 
-    test_loss /= num_batches
-    correct /= size
-    print(f"Test Error: \n Accuracy: {(100*correct):>0.1f}%, Avg loss: {test_loss:>8f} \n")
+    loss /= num_batches
+    print(f"Avg loss: {loss:>8f} \n")
